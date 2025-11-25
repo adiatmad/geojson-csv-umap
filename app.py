@@ -1,16 +1,6 @@
 """
 Streamlit app: GeoJSON <-> CSV bulk properties editor workflow
-Features:
-- Upload GeoJSON -> convert to CSV (properties flattened + geometry as JSON string)
-- Download CSV, edit in Excel (DO NOT edit `geometry_json` column)
-- Upload edited CSV -> merge properties back with original geometry -> produce valid GeoJSON
-- Preview small sample of data and basic validation
-
-Notes for user:
-- You must NOT modify the `geometry_json` column in Excel. If you need to edit geometry, use a proper GIS tool (QGIS/uMap editor).
-- This app assumes FeatureCollection input GeoJSON.
-
-Developer note: default_example_path is included (from conversation history) as a local placeholder.
+Simplified encoding handling: UTF-8 first, then fallback to Latin-1/CP1252
 """
 
 import streamlit as st
@@ -25,9 +15,43 @@ st.title("GeoJSON ↔ CSV Bulk Editor — bulk-edit properties for uMap workflow
 # Developer-provided local path from conversation history (placeholder)
 DEFAULT_EXAMPLE_PATH = "/mnt/data/baee1fac-2f34-4d13-a83e-39ceda97409b.png"
 
-st.info("Jangan edit kolom `geometry_json` di Excel. Hanya edit kolom properties (nama, jenis, dsb).")
+st.info("🚨 **PENTING**: Jangan edit kolom `geometry_json` di Excel. Hanya edit kolom properties (nama, jenis, dsb).")
 
-# --- Helpers ---
+# --- Simplified Encoding Helpers ---
+
+def read_csv_with_fallback(file_buffer):
+    """
+    Simple encoding fallback: 
+    1. First try UTF-8
+    2. If fails, try Latin-1 or CP1252
+    """
+    # Try UTF-8 first
+    try:
+        file_buffer.seek(0)
+        df = pd.read_csv(file_buffer, encoding='utf-8', dtype=str, keep_default_na=False)
+        st.success("✅ CSV dibaca dengan encoding: UTF-8")
+        return df
+    except UnicodeDecodeError:
+        st.warning("❌ UTF-8 gagal, mencoba Latin-1...")
+    
+    # Try Latin-1 (ISO-8859-1)
+    try:
+        file_buffer.seek(0)
+        df = pd.read_csv(file_buffer, encoding='latin-1', dtype=str, keep_default_na=False)
+        st.success("✅ CSV dibaca dengan encoding: Latin-1 (ISO-8859-1)")
+        return df
+    except UnicodeDecodeError:
+        st.warning("❌ Latin-1 gagal, mencoba CP1252...")
+    
+    # Try CP1252 (Windows Western European)
+    try:
+        file_buffer.seek(0)
+        df = pd.read_csv(file_buffer, encoding='cp1252', dtype=str, keep_default_na=False)
+        st.success("✅ CSV dibaca dengan encoding: CP1252 (Windows)")
+        return df
+    except Exception as e:
+        st.error(f"❌ Semua encoding gagal: {e}")
+        raise
 
 def geojson_to_dataframe(geojson: Dict[str, Any]) -> pd.DataFrame:
     """Convert GeoJSON FeatureCollection to pandas DataFrame.
@@ -58,7 +82,6 @@ def geojson_to_dataframe(geojson: Dict[str, Any]) -> pd.DataFrame:
     cols = ["_feature_id", "geometry_json"] + [c for c in df.columns if c not in ("_feature_id", "geometry_json")]
     return df[cols]
 
-
 def dataframe_to_geojson(df: pd.DataFrame) -> Dict[str, Any]:
     """Convert DataFrame back to GeoJSON FeatureCollection.
     Expects 'geometry_json' column containing a JSON geometry for each row.
@@ -69,8 +92,8 @@ def dataframe_to_geojson(df: pd.DataFrame) -> Dict[str, Any]:
         geom_json = row.get("geometry_json")
         try:
             geom = json.loads(geom_json) if pd.notna(geom_json) and geom_json is not None else None
-        except Exception:
-            st.error(f"Invalid geometry JSON for feature id={row.get('_feature_id')}")
+        except Exception as e:
+            st.error(f"Invalid geometry JSON for feature id={row.get('_feature_id')}: {str(e)}")
             geom = None
 
         props = {}
@@ -79,7 +102,7 @@ def dataframe_to_geojson(df: pd.DataFrame) -> Dict[str, Any]:
                 continue
             # convert NaN to None
             val = row[col]
-            if pd.isna(val):
+            if pd.isna(val) or val == '':
                 continue
             props[col] = val
 
@@ -93,92 +116,150 @@ def dataframe_to_geojson(df: pd.DataFrame) -> Dict[str, Any]:
 
     return {"type": "FeatureCollection", "features": features}
 
-
 # --- UI: Step 1: Upload GeoJSON and convert to CSV ---
-st.header("Step A — Convert GeoJSON → CSV (for bulk editing)")
+st.header("📥 Step A — Convert GeoJSON → CSV (for bulk editing)")
 col1, col2 = st.columns([1, 1])
 with col1:
     uploaded_geojson = st.file_uploader("Upload GeoJSON (.geojson or .json)", type=["geojson", "json"], key="upload_geo")
-    st.caption("If you don't have a GeoJSON, you can paste the text below or use an example path from the conversation history.")
+    st.caption("Jika Anda tidak memiliki GeoJSON, Anda dapat paste teks di bawah atau gunakan contoh path dari conversation history.")
     example_path = st.text_input("(Optional) Local example path (from conversation history)", value=DEFAULT_EXAMPLE_PATH)
-    paste_geo_text = st.text_area("Or paste GeoJSON here (optional)", height=120)
+    paste_geo_text = st.text_area("Atau paste GeoJSON di sini (optional)", height=120)
 with col2:
-    st.write("Instructions:")
+    st.write("📋 Instructions:")
     st.markdown("""
-- Upload your original GeoJSON FeatureCollection.
-- This tool will create a CSV where each row is one feature.
-- The `geometry_json` column contains the geometry as a JSON string — **do not edit this column in Excel**.
-- Edit only property columns in Excel, then upload the CSV back in Step B to merge.
+- Upload GeoJSON FeatureCollection asli Anda
+- Tool akan membuat CSV di mana setiap baris adalah satu feature
+- Kolom `geometry_json` berisi geometry sebagai JSON string — **jangan edit kolom ini di Excel**
+- Hanya edit kolom properties di Excel, lalu upload kembali CSV di Step B untuk merge
 """)
 
 geojson_obj = None
 if uploaded_geojson is not None:
     try:
         geojson_obj = json.load(uploaded_geojson)
+        st.success("✅ GeoJSON berhasil di-load")
     except Exception as e:
-        st.error(f"Gagal parse GeoJSON: {e}")
+        st.error(f"❌ Gagal parse GeoJSON: {e}")
 elif paste_geo_text.strip() != "":
     try:
         geojson_obj = json.loads(paste_geo_text)
+        st.success("✅ GeoJSON dari teks berhasil di-load")
     except Exception as e:
-        st.error(f"Gagal parse GeoJSON dari teks: {e}")
+        st.error(f"❌ Gagal parse GeoJSON dari teks: {e}")
 else:
-    # show example hint using the local path if present (no auto-load)
     st.caption(f"Contoh lokal path (tidak otomatis dimuat): {example_path}")
 
 if geojson_obj is not None:
     try:
         df_out = geojson_to_dataframe(geojson_obj)
-        st.subheader("Preview CSV hasil convert (first 10 rows)")
+        st.subheader("👀 Preview CSV hasil convert (10 baris pertama)")
         st.dataframe(df_out.head(10))
+        
+        st.info(f"📊 Total features: {len(df_out)} | Total kolom: {len(df_out.columns)}")
 
         # CSV download
         csv_buffer = io.StringIO()
-        df_out.to_csv(csv_buffer, index=False)
+        df_out.to_csv(csv_buffer, index=False, encoding='utf-8')
         csv_bytes = csv_buffer.getvalue().encode("utf-8")
-        st.download_button("Download CSV untuk diedit di Excel", data=csv_bytes, file_name="export_properties.csv", mime="text/csv")
+        
+        st.download_button(
+            "💾 Download CSV untuk diedit di Excel", 
+            data=csv_bytes, 
+            file_name="export_properties.csv", 
+            mime="text/csv",
+            help="Simpan file CSV ini dan edit di Excel. Untuk menghindari masalah encoding, save sebagai UTF-8!"
+        )
+        
     except Exception as e:
-        st.error(f"Gagal convert GeoJSON → CSV: {e}")
+        st.error(f"❌ Gagal convert GeoJSON → CSV: {e}")
 
 # --- UI: Step 2: Upload edited CSV and merge back to GeoJSON ---
 st.markdown("---")
-st.header("Step B — Upload CSV hasil edit → Merge → Download GeoJSON")
-edited_csv = st.file_uploader("Upload CSV yang sudah kamu edit (dari Step A)", type=["csv"], key="upload_csv")
+st.header("📤 Step B — Upload CSV hasil edit → Merge → Download GeoJSON")
+
+edited_csv = st.file_uploader("Upload CSV yang sudah diedit (dari Step A)", type=["csv"], key="upload_csv")
 
 if edited_csv is not None:
     try:
-        df_edited = pd.read_csv(edited_csv, dtype=str)
-        st.subheader("Preview CSV (after edit)")
+        # Use simple fallback approach
+        df_edited = read_csv_with_fallback(edited_csv)
+        
+        st.subheader("👀 Preview CSV (setelah edit)")
         st.dataframe(df_edited.head(10))
+        
+        st.info(f"📊 Data shape: {df_edited.shape[0]} baris, {df_edited.shape[1]} kolom")
 
-        # Basic validation
+        # Enhanced validation
         if "geometry_json" not in df_edited.columns:
-            st.error("CSV tidak mengandung kolom 'geometry_json'. Pastikan file berasal dari Step A dan jangan hapus kolom ini.")
+            st.error("❌ CSV tidak mengandung kolom 'geometry_json'. Pastikan file berasal dari Step A dan jangan hapus kolom ini.")
         else:
-            # Merge back to GeoJSON
-            # Clean NaN strings
+            # Check for empty geometry columns
+            empty_geometry_count = df_edited['geometry_json'].isna().sum() + (df_edited['geometry_json'] == '').sum()
+            if empty_geometry_count > 0:
+                st.warning(f"⚠️  {empty_geometry_count} features memiliki geometry yang kosong")
+            
+            # Clean data
+            df_edited = df_edited.replace(['', 'NaN', 'NaT', 'None'], None)
             df_edited = df_edited.where(pd.notna(df_edited), None)
+            
+            # Merge back to GeoJSON
             geo_out = dataframe_to_geojson(df_edited)
 
-            st.subheader("Preview GeoJSON (first feature)")
+            st.subheader("🔍 Preview GeoJSON (feature pertama)")
             if len(geo_out.get("features", [])) > 0:
                 st.json(geo_out.get("features")[0])
+            else:
+                st.warning("Tidak ada features dalam GeoJSON hasil")
 
-            geo_str = json.dumps(geo_out, indent=2)
-            st.download_button("Download merged GeoJSON", data=geo_str.encode("utf-8"), file_name="merged.geojson", mime="application/json")
-            st.success("GeoJSON berhasil dibuat. Silakan download dan upload ke uMap.")
+            # Download GeoJSON
+            geo_str = json.dumps(geo_out, indent=2, ensure_ascii=False)
+            st.download_button(
+                "💾 Download merged GeoJSON", 
+                data=geo_str.encode("utf-8"), 
+                file_name="merged.geojson", 
+                mime="application/json"
+            )
+            st.success("✅ GeoJSON berhasil dibuat! Silakan download dan upload ke uMap.")
+            
     except Exception as e:
-        st.error(f"Gagal memproses CSV: {e}")
+        st.error(f"❌ Gagal memproses CSV: {e}")
+        
+        # Show encoding help
+        st.info("""
+        💡 **Tips Encoding**:
+        - **Excel**: File → Save As → pilih "CSV UTF-8 (Comma delimited)"
+        - **Google Sheets**: File → Download → Comma-separated values
+        - **Text Editor**: Save dengan encoding UTF-8
+        """)
 
-# --- Optional: quick validator / small fixes ---
+# --- Enhanced Tips Section ---
 st.markdown("---")
-st.header("Validator & Tips")
-st.write("Tips singkat untuk menghindari kesalahan saat mengedit di Excel:")
+st.header("🔧 Tips & Panduan")
+
+st.write("### 🛠️ Cara menghindari masalah encoding di Excel:")
 st.markdown("""
-- Jangan hapus atau ubah kolom `geometry_json` atau `_feature_id`.
-- Jika Excel mengubah format teks (mis. mengubah 00123 menjadi 123), pertimbangkan untuk menyimpan CSV sebagai UTF-8 dan buka sebagai teks di Excel (atau gunakan LibreOffice).
-- Jika ada kolom timestamp, pastikan format ISO (`YYYY-MM-DDTHH:MM:SSZ`).
-- Jika kamu butuh edit geometry, gunakan QGIS atau editor online, jangan Excel.
+1. **Windows**: File → Save As → pilih "CSV UTF-8 (Comma delimited)" 
+2. **Mac**: File → Export → pilih "Windows Comma Separated (.csv)"
+3. **Atau gunakan text editor** seperti Notepad++/VS Code untuk save sebagai UTF-8
 """)
 
-st.caption("App ini dibuat otomatis — jika butuh fitur tambahan (WKT support, preview map, auto-repair coordinates), minta saja dan aku tambahkan.")
+st.write("### 📝 Tips penting:")
+st.markdown("""
+- ✅ **Boleh edit**: Semua kolom kecuali `geometry_json` dan `_feature_id`
+- ❌ **Jangan edit**: Kolom `geometry_json` dan `_feature_id`
+- 🔧 **Jika butuh edit geometry**: Gunakan QGIS, uMap editor, atau tools GIS lainnya
+- 📁 **Simpan backup** CSV original sebelum edit
+""")
+
+# Simple troubleshooting
+with st.expander("🔍 Troubleshooting Cepat"):
+    st.markdown("""
+    **Problem**: Error encoding seperti `utf-8 codec can't decode byte 0xb1`
+    
+    **Solusi**: 
+    1. Buka CSV di text editor (Notepad++, VS Code, dll)
+    2. File → Save As → pilih encoding UTF-8
+    3. Upload ulang file yang sudah disave sebagai UTF-8
+    """)
+
+st.caption("App dengan simplified encoding handling — UTF-8 → Latin-1 → CP1252 fallback")
