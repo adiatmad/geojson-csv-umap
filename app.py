@@ -1,6 +1,7 @@
 """
 Streamlit app: GeoJSON <-> CSV bulk properties editor workflow
 Simplified encoding handling: UTF-8 first, then fallback to Latin-1/CP1252
+Added feature to combine multiple GeoJSON files
 """
 
 import streamlit as st
@@ -116,6 +117,99 @@ def dataframe_to_geojson(df: pd.DataFrame) -> Dict[str, Any]:
 
     return {"type": "FeatureCollection", "features": features}
 
+def combine_geojson_files(geojson_files: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Combine multiple GeoJSON FeatureCollections into one valid GeoJSON FeatureCollection.
+    Handles duplicate feature IDs by adding suffixes.
+    """
+    all_features = []
+    feature_ids = set()
+    
+    for i, geojson_obj in enumerate(geojson_files):
+        features = geojson_obj.get("features", [])
+        st.info(f"📁 File {i+1}: {len(features)} features")
+        
+        for feature in features:
+            # Handle duplicate feature IDs
+            original_id = feature.get("id")
+            if original_id and original_id in feature_ids:
+                # Add suffix to make ID unique
+                counter = 1
+                new_id = f"{original_id}_{counter}"
+                while new_id in feature_ids:
+                    counter += 1
+                    new_id = f"{original_id}_{counter}"
+                feature["id"] = new_id
+                st.warning(f"⚠️ Duplicate ID '{original_id}' renamed to '{new_id}'")
+            
+            if feature.get("id"):
+                feature_ids.add(feature["id"])
+            
+            all_features.append(feature)
+    
+    return {"type": "FeatureCollection", "features": all_features}
+
+# --- UI: Step 0: Combine Multiple GeoJSON Files ---
+st.header("🔄 Step 0 — Combine Multiple GeoJSON Files")
+st.write("Gabungkan beberapa file GeoJSON menjadi satu file yang valid")
+
+multi_geojson_files = st.file_uploader(
+    "Upload multiple GeoJSON files (.geojson or .json)", 
+    type=["geojson", "json"], 
+    key="multi_geo",
+    accept_multiple_files=True
+)
+
+if multi_geojson_files and len(multi_geojson_files) > 1:
+    st.info(f"📁 {len(multi_geojson_files)} files selected for combining")
+    
+    geojson_objects = []
+    valid_files = True
+    
+    for i, uploaded_file in enumerate(multi_geojson_files):
+        try:
+            geojson_obj = json.load(uploaded_file)
+            if geojson_obj.get("type") == "FeatureCollection":
+                geojson_objects.append(geojson_obj)
+                st.success(f"✅ File {i+1}: {uploaded_file.name} - Valid FeatureCollection")
+            else:
+                st.error(f"❌ File {i+1}: {uploaded_file.name} - Not a FeatureCollection")
+                valid_files = False
+        except Exception as e:
+            st.error(f"❌ File {i+1}: {uploaded_file.name} - Error: {e}")
+            valid_files = False
+    
+    if valid_files and geojson_objects:
+        try:
+            combined_geojson = combine_geojson_files(geojson_objects)
+            total_features = len(combined_geojson["features"])
+            
+            st.success(f"✅ Successfully combined {len(geojson_objects)} files into {total_features} total features")
+            
+            # Preview combined data
+            st.subheader("👀 Preview Combined GeoJSON (first 3 features)")
+            for i, feature in enumerate(combined_geojson["features"][:3]):
+                st.write(f"**Feature {i+1}:**")
+                st.json(feature)
+            
+            # Download combined GeoJSON
+            combined_geo_str = json.dumps(combined_geojson, indent=2, ensure_ascii=False)
+            st.download_button(
+                "💾 Download Combined GeoJSON", 
+                data=combined_geo_str.encode("utf-8"), 
+                file_name="combined.geojson", 
+                mime="application/json",
+                key="download_combined"
+            )
+            
+            # Option to use combined GeoJSON in next steps
+            if st.button("🔄 Use Combined GeoJSON for Step A"):
+                st.session_state.combined_geojson = combined_geojson
+                st.success("✅ Combined GeoJSON ready for Step A! Scroll down to continue.")
+                
+        except Exception as e:
+            st.error(f"❌ Error combining GeoJSON files: {e}")
+
 # --- UI: Step 1: Upload GeoJSON and convert to CSV ---
 st.header("📥 Step A — Convert GeoJSON → CSV (for bulk editing)")
 col1, col2 = st.columns([1, 1])
@@ -131,10 +225,16 @@ with col2:
 - Tool akan membuat CSV di mana setiap baris adalah satu feature
 - Kolom `geometry_json` berisi geometry sebagai JSON string — **jangan edit kolom ini di Excel**
 - Hanya edit kolom properties di Excel, lalu upload kembali CSV di Step B untuk merge
+- **New**: You can also use combined GeoJSON from Step 0 above
 """)
 
 geojson_obj = None
-if uploaded_geojson is not None:
+
+# Check if we have a combined GeoJSON from Step 0
+if 'combined_geojson' in st.session_state:
+    st.success("✅ Using combined GeoJSON from Step 0")
+    geojson_obj = st.session_state.combined_geojson
+elif uploaded_geojson is not None:
     try:
         geojson_obj = json.load(uploaded_geojson)
         st.success("✅ GeoJSON berhasil di-load")
@@ -236,6 +336,14 @@ if edited_csv is not None:
 st.markdown("---")
 st.header("🔧 Tips & Panduan")
 
+st.write("### 🆕 New Feature: Combine Multiple GeoJSON Files")
+st.markdown("""
+- **Step 0**: Upload multiple GeoJSON files and combine them into one valid GeoJSON
+- **Automatic duplicate handling**: If feature IDs are duplicated, they will be automatically renamed
+- **Seamless workflow**: After combining, you can directly use the result in Step A
+- **Validation**: Only valid FeatureCollections are accepted
+""")
+
 st.write("### 🛠️ Cara menghindari masalah encoding di Excel:")
 st.markdown("""
 1. **Windows**: File → Save As → pilih "CSV UTF-8 (Comma delimited)" 
@@ -249,6 +357,7 @@ st.markdown("""
 - ❌ **Jangan edit**: Kolom `geometry_json` dan `_feature_id`
 - 🔧 **Jika butuh edit geometry**: Gunakan QGIS, uMap editor, atau tools GIS lainnya
 - 📁 **Simpan backup** CSV original sebelum edit
+- 🆕 **Combine files**: Use Step 0 to merge multiple GeoJSON files before editing
 """)
 
 # Simple troubleshooting
@@ -260,6 +369,12 @@ with st.expander("🔍 Troubleshooting Cepat"):
     1. Buka CSV di text editor (Notepad++, VS Code, dll)
     2. File → Save As → pilih encoding UTF-8
     3. Upload ulang file yang sudah disave sebagai UTF-8
+    
+    **Problem**: Feature IDs duplicated when combining files
+    
+    **Solusi**:
+    - The app automatically handles duplicates by adding suffixes
+    - You can manually edit IDs in the CSV if needed
     """)
 
-st.caption("App dengan simplified encoding handling — UTF-8 → Latin-1 → CP1252 fallback")
+st.caption("App dengan simplified encoding handling — UTF-8 → Latin-1 → CP1252 fallback — dan fitur combine multiple GeoJSON files")
