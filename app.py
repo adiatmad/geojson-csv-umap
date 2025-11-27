@@ -268,35 +268,126 @@ if edited_csv:
         st.download_button("💾 Download merged GeoJSON", json.dumps(geo_out, indent=2, ensure_ascii=False).encode("utf-8"), "merged.geojson", "application/json")
 
 # --------------------------
-# --- IMPROVED Step C: Stand-alone Join Attributes
+# --- IMPROVED Step C: Stand-alone Join Attributes (FIXED PARSER)
 # --------------------------
 st.header("🧩 Step C — Join Attributes (GeoJSON + CSV)")
 
 st.info("""
 **Cara penggunaan:**
 1. **File Utama**: Upload GeoJSON Anda
-2. **File Tambahan**: Upload file XLSX/CSV dengan data atribut tambahan  
+2. **File Tambahan**: Upload file CSV dengan data atribut tambahan (format pipe-separated)
 3. **Join Key**: Kolom yang sama di kedua file (biasanya 'id' atau '_feature_id')
 """)
+
+def parse_message_to_dict(message):
+    """Parse message field dengan format 'key : value | key : value' menjadi dictionary"""
+    if not message or ':' not in message:
+        return {}
+    
+    # Bersihkan dan split berdasarkan '|'
+    pairs = [pair.strip() for pair in message.split('|') if ':' in pair]
+    result = {}
+    
+    for pair in pairs:
+        if ':' in pair:
+            key, value = pair.split(':', 1)  # split hanya pada colon pertama
+            key = key.strip()
+            value = value.strip()
+            
+            # Mapping key yang konsisten
+            key_mapping = {
+                'Nama Fasilitas': 'name',
+                'Nama Jalan': 'name',
+                'Jenis Fasum': 'jenis_fasilitas',
+                'Daya Tampung': 'kapasitas',
+                'Fasilitas Pendukung': 'fasilitas',
+                'Kontak Person': 'kontak',
+                'Jenis Bangunan': 'jenis_bangunan', 
+                'Luas Area Terbuka': 'luas_area',
+                'Jaringan Komunikasi': 'jaringan_komunikasi',
+                'Keterangan Tambahan': 'keterangan',
+                'Kecamatan': 'kecamatan',
+                'Desa': 'desa',
+                'Banjar': 'banjar',
+                'Jenis Jalan': 'jenis_jalan',
+                'Lebar Jalan': 'lebar_jalan',
+                'Karakter Jalan': 'karakter_jalan',
+                'Kondisi Jalan': 'kondisi_jalan'
+            }
+            
+            if key in key_mapping:
+                result[key_mapping[key]] = value
+            elif key not in ['Kecamatan', 'Desa', 'Banjar']:  # Skip yang sudah ada di field lain
+                result[key.lower().replace(' ', '_')] = value
+    
+    return result
+
+def process_csv_with_message_parsing(csv_file):
+    """Process CSV file dengan parsing kolom message"""
+    df = read_csv_with_fallback(csv_file)
+    if df is None or df.empty:
+        return None
+    
+    # Check if 'message' column exists
+    if 'message' not in df.columns:
+        st.warning("⚠️ Kolom 'message' tidak ditemukan di CSV. Menggunakan data asli.")
+        return df
+    
+    st.write(f"🔍 Memproses {len(df)} records dengan parsing kolom 'message'...")
+    
+    # Parse each message and merge with existing data
+    parsed_data = []
+    for idx, row in df.iterrows():
+        message_data = parse_message_to_dict(row.get('message', ''))
+        
+        # Create new row combining existing data and parsed message
+        new_row = row.to_dict()
+        
+        # Update dengan data dari message (replace jika ada)
+        for key, value in message_data.items():
+            new_row[key] = value
+        
+        parsed_data.append(new_row)
+    
+    # Convert back to DataFrame
+    parsed_df = pd.DataFrame(parsed_data)
+    
+    # Reorder columns untuk konsistensi
+    priority_cols = ['id', 'name', 'jenis', 'kapasitas', 'kecamatan', 'desa', 'banjar']
+    other_cols = [col for col in parsed_df.columns if col not in priority_cols and col != 'message']
+    
+    final_cols = priority_cols + other_cols
+    # Hanya ambil kolom yang ada di DataFrame
+    final_cols = [col for col in final_cols if col in parsed_df.columns]
+    
+    if 'message' in parsed_df.columns:
+        final_cols.append('message')  # Taruh message di akhir
+    
+    parsed_df = parsed_df[final_cols]
+    
+    st.success(f"✅ Berhasil parsing {len(parsed_df)} records")
+    st.write("📊 Kolom setelah parsing:", list(parsed_df.columns))
+    
+    return parsed_df
 
 col1, col2 = st.columns(2)
 with col1:
     st.subheader("File Utama (GeoJSON)")
-    main_file = st.file_uploader("Upload file GeoJSON", type=["geojson","json"], key="main_file_fixed")
+    main_file = st.file_uploader("Upload file GeoJSON", type=["geojson","json"], key="main_file_stepc")
     
 with col2:
     st.subheader("File Tambahan (CSV)")
-    add_file = st.file_uploader("Upload file data tambahan", type=["csv"], key="add_file_fixed")
+    add_file = st.file_uploader("Upload file CSV dengan data pipe-separated", type=["csv"], key="add_file_stepc")
 
 # Auto-detect join key options
 join_key_options = ["id", "_feature_id", "name", "ID", "Id"]
-join_key_c = st.selectbox("Pilih kolom untuk join:", options=join_key_options, index=0, key="join_key_c_fixed")
-custom_join_key = st.text_input("Atau masukkan nama kolom manual:", key="custom_join_key")
+join_key_c = st.selectbox("Pilih kolom untuk join:", options=join_key_options, index=0, key="join_key_stepc")
+custom_join_key = st.text_input("Atau masukkan nama kolom manual:", key="custom_join_key_stepc")
 
 # Use custom key if provided
 final_join_key = custom_join_key if custom_join_key else join_key_c
 
-if st.button("🔗 JOIN ATTRIBUTES", type="primary", key="join_button_fixed"):
+if st.button("🔗 JOIN ATTRIBUTES", type="primary", key="join_button_stepc"):
     if not main_file or not add_file:
         st.error("❌ Harap upload kedua file")
     else:
@@ -312,74 +403,109 @@ if st.button("🔗 JOIN ATTRIBUTES", type="primary", key="join_button_fixed"):
                 st.write(f"✅ GeoJSON loaded: {len(main_df)} features")
                 st.write("📊 Kolom dalam GeoJSON:", list(main_df.columns))
                 
-            # Load ADDITIONAL file (XLSX/CSV)
-            st.write("📁 **Memproses File Tambahan...**")
-            add_df = None
-            if add_file.name.lower().endswith(".csv"):
-                add_df = read_csv_with_fallback(add_file)
-            elif add_file.name.lower().endswith(".xlsx"):
-                add_df = read_xlsx_with_fallback(add_file)
+            # Load ADDITIONAL file (CSV dengan parsing message)
+            st.write("📁 **Memproses File Tambahan (CSV dengan parsing)...**")
+            add_df = process_csv_with_message_parsing(add_file)
             
             if add_df is None or add_df.empty:
                 st.error("❌ File tambahan tidak dapat dibaca atau kosong")
             else:
                 st.write(f"✅ Data tambahan loaded: {len(add_df)} records")
-                st.write("📊 Kolom dalam file tambahan:", list(add_df.columns))
+                st.write("📊 Kolom dalam file tambahan setelah parsing:", list(add_df.columns))
+                
+                # Show sample of parsed data
+                with st.expander("👀 Lihat sample data hasil parsing"):
+                    st.dataframe(add_df.head(5))
             
             # Perform join if both files loaded successfully
             if main_df is not None and not main_df.empty and add_df is not None and not add_df.empty:
-                df_joined = join_attributes(main_df, add_df, final_join_key)
+                # Clean both dataframes
+                main_df = clean_dataframe(main_df)
+                add_df = clean_dataframe(add_df)
                 
-                if df_joined is not None:
-                    st.success("🎉 JOIN BERHASIL!")
+                # Check if join key exists
+                if final_join_key not in main_df.columns:
+                    st.error(f"❌ Key '{final_join_key}' tidak ditemukan di file utama. Kolom yang tersedia: {list(main_df.columns)}")
+                elif final_join_key not in add_df.columns:
+                    st.error(f"❌ Key '{final_join_key}' tidak ditemukan di file tambahan. Kolom yang tersedia: {list(add_df.columns)}")
+                else:
+                    # Convert join key to string in both dataframes
+                    main_df[final_join_key] = main_df[final_join_key].astype(str).str.strip()
+                    add_df[final_join_key] = add_df[final_join_key].astype(str).str.strip()
+                    
+                    st.write(f"🔍 Sample join keys dari file utama: {main_df[final_join_key].head().tolist()}")
+                    st.write(f"🔍 Sample join keys dari file tambahan: {add_df[final_join_key].head().tolist()}")
+                    
+                    # Perform the join
+                    joined = pd.merge(main_df, add_df, on=final_join_key, how="left", suffixes=('', '_add'))
+                    
+                    # Remove duplicate columns
+                    for col in joined.columns:
+                        if col.endswith('_add'):
+                            original_col = col[:-4]
+                            if original_col in joined.columns:
+                                # Keep the original from main_df, drop the _add version
+                                joined = joined.drop(columns=[col])
+                    
+                    st.success(f"✅ Join berhasil! {len(main_df)} records digabung dengan {len(add_df)} records")
                     
                     # Show preview
                     st.subheader("📋 Preview Data Hasil Join")
-                    st.dataframe(df_joined.head(10))
+                    st.dataframe(joined.head(10))
                     
                     # Show join statistics
-                    matched_count = len(df_joined[df_joined[final_join_key].isin(add_df[final_join_key])])
+                    matched_count = len(joined[joined[final_join_key].isin(add_df[final_join_key])])
                     st.write(f"📈 Statistik Join: {matched_count}/{len(main_df)} features berhasil dipasangkan")
+                    
+                    # Simpan ke session state untuk Step D
+                    st.session_state.df_joined_c = joined
                     
                     # Download options
                     st.subheader("💾 Download Hasil Join")
                     
-                    # CSV Download
-                    csv_buffer = io.StringIO()
-                    df_joined.to_csv(csv_buffer, index=False, encoding='utf-8')
-                    st.download_button(
-                        "📥 Download sebagai CSV", 
-                        csv_buffer.getvalue().encode("utf-8"), 
-                        "joined_data.csv", 
-                        "text/csv"
-                    )
+                    col1, col2 = st.columns(2)
                     
-                    # GeoJSON Download
-                    geojson_result = dataframe_to_geojson(df_joined)
-                    geojson_str = json.dumps(geojson_result, indent=2, ensure_ascii=False)
-                    st.download_button(
-                        "🗺️ Download sebagai GeoJSON", 
-                        geojson_str.encode("utf-8"), 
-                        "joined_data.geojson", 
-                        "application/json"
-                    )
+                    with col1:
+                        # CSV Download
+                        csv_buffer = io.StringIO()
+                        joined.to_csv(csv_buffer, index=False, encoding='utf-8')
+                        st.download_button(
+                            "📥 Download sebagai CSV", 
+                            csv_buffer.getvalue().encode("utf-8"), 
+                            "joined_data.csv", 
+                            "text/csv"
+                        )
+                    
+                    with col2:
+                        # GeoJSON Download
+                        geojson_result = dataframe_to_geojson(joined)
+                        geojson_str = json.dumps(geojson_result, indent=2, ensure_ascii=False)
+                        st.download_button(
+                            "🗺️ Download sebagai GeoJSON", 
+                            geojson_str.encode("utf-8"), 
+                            "joined_data.geojson", 
+                            "application/json"
+                        )
                     
         except Exception as e:
             st.error(f"❌ Error selama proses join: {str(e)}")
+            import traceback
+            st.code(traceback.format_exc())
             st.write("🔧 **Tips troubleshooting:**")
             st.write("- Pastikan nama kolom join key sama di kedua file")
             st.write("- Pastikan nilai di kolom join key cocok (case-sensitive)")
             st.write("- Cek preview data di atas untuk memastikan formatnya sesuai")
 
 # Additional debugging info
-if st.checkbox("🔧 Show debug info"):
+if st.checkbox("🔧 Show debug info", key="debug_stepc"):
     if 'main_df' in locals():
-        st.write("Main DataFrame info:", main_df.info())
+        st.write("Main DataFrame columns:", list(main_df.columns))
+        st.write("Main DataFrame sample:")
+        st.dataframe(main_df.head(3))
     if 'add_df' in locals():
-        st.write("Add DataFrame info:", add_df.info())
-
-st.markdown("---")
-st.write("**Catatan:** Aplikasi ini khusus untuk menggabungkan data XLSX/CSV dengan GeoJSON berdasarkan kolom join yang sama.")
+        st.write("Add DataFrame columns:", list(add_df.columns))
+        st.write("Add DataFrame sample:")
+        st.dataframe(add_df.head(3))
 
 # --------------------------
 # --- STEP D: BULK HTML STYLING FOR PIPE-SEPARATED DATA
@@ -549,4 +675,5 @@ if st.button("🔄 Convert to HTML"):
 
 st.markdown("---")
 st.write("**✨ Complete GeoJSON ↔ CSV Editor with Bulk HTML Styling**")
+
 
