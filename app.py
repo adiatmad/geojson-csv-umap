@@ -5,7 +5,7 @@ Includes:
 - Step A: GeoJSON → CSV
 - Step B: CSV → Merge → GeoJSON
 - Step C: Stand-alone Join Attributes (CSV/XLSX/GeoJSON)
-Simplified encoding handling: UTF-8 first, then fallback to Latin-1/CP1252
+- XLSX fallback friendly + auto convert join key to string
 """
 
 import streamlit as st
@@ -82,7 +82,7 @@ def dataframe_to_geojson(df: pd.DataFrame) -> Dict[str, Any]:
 def combine_geojson_files(geojson_files: List[Dict[str, Any]]) -> Dict[str, Any]:
     all_features = []
     feature_ids = set()
-    for i, geojson_obj in enumerate(geojson_files):
+    for geojson_obj in geojson_files:
         for feature in geojson_obj.get("features", []):
             original_id = feature.get("id")
             if original_id and original_id in feature_ids:
@@ -99,6 +99,9 @@ def combine_geojson_files(geojson_files: List[Dict[str, Any]]) -> Dict[str, Any]
     return {"type":"FeatureCollection","features":all_features}
 
 def join_attributes(main_df, add_df, join_key):
+    # Convert join key to string in both df
+    main_df[join_key] = main_df[join_key].astype(str)
+    add_df[join_key] = add_df[join_key].astype(str)
     joined = pd.merge(main_df, add_df, on=join_key, how="left", suffixes=('', '_add'))
     return joined
 
@@ -106,19 +109,16 @@ def join_attributes(main_df, add_df, join_key):
 # --- Step 0: Combine GeoJSON
 # --------------------------
 st.header("🔄 Step 0 — Combine Multiple GeoJSON Files")
-st.write("Gabungkan beberapa file GeoJSON menjadi satu file yang valid")
-
 multi_geojson_files = st.file_uploader(
     "Upload multiple GeoJSON files (.geojson or .json)", 
     type=["geojson", "json"], 
     key="multi_geo",
     accept_multiple_files=True
 )
-
 if multi_geojson_files and len(multi_geojson_files) > 1:
     geojson_objects = []
     valid_files = True
-    for i, uploaded_file in enumerate(multi_geojson_files):
+    for uploaded_file in multi_geojson_files:
         try:
             geojson_obj = json.load(uploaded_file)
             if geojson_obj.get("type") == "FeatureCollection":
@@ -131,7 +131,7 @@ if multi_geojson_files and len(multi_geojson_files) > 1:
             valid_files = False
     if valid_files and geojson_objects:
         combined_geojson = combine_geojson_files(geojson_objects)
-        st.success(f"✅ Successfully combined {len(geojson_objects)} files ({len(combined_geojson['features'])} features)")
+        st.success(f"✅ Combined {len(geojson_objects)} files ({len(combined_geojson['features'])} features)")
         st.session_state.combined_geojson = combined_geojson
 
 # --------------------------
