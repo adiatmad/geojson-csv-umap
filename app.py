@@ -2,7 +2,7 @@
 Streamlit app: GeoJSON <-> CSV bulk properties editor workflow
 - UTF-8 → Latin-1/CP1252 fallback
 - Combine multiple GeoJSON files
-- Step 1.5: Join attributes from another CSV/GeoJSON
+- Step C: Stand-alone Join Attributes
 """
 
 import streamlit as st
@@ -204,41 +204,6 @@ if geojson_obj:
         mime="text/csv"
     )
 
-# --- Step 1.5: Join Attributes ---
-st.markdown("---")
-st.header("🧩 Step 1.5 — Join Attributes to Current GeoJSON")
-st.info("Optional: Merge additional attribute table (CSV or GeoJSON) into current GeoJSON. Geometry stays intact.")
-
-join_file = st.file_uploader("Upload CSV or GeoJSON with additional attributes", type=["csv","geojson","json"], key="join_attributes")
-join_key = st.text_input("Join key column (must exist in both tables)", value="_feature_id", key="join_key_input")
-
-if join_file and st.button("🔗 Join Attributes"):
-    try:
-        if join_file.name.lower().endswith(".csv"):
-            join_df = read_csv_with_fallback(join_file)
-        else:
-            join_geo = json.load(join_file)
-            join_df = geojson_to_dataframe(join_geo)
-        if join_key not in df_out.columns:
-            st.error(f"❌ Key '{join_key}' not found in current GeoJSON DataFrame")
-        elif join_key not in join_df.columns:
-            st.error(f"❌ Key '{join_key}' not found in join table")
-        else:
-            df_out = join_attributes(df_out, join_df, join_key)
-            st.success("✅ Attributes successfully joined!")
-            st.subheader("👀 Preview joined DataFrame (first 10 rows)")
-            st.dataframe(df_out.head(10))
-            csv_buffer_joined = io.StringIO()
-            df_out.to_csv(csv_buffer_joined, index=False, encoding='utf-8')
-            st.download_button(
-                "💾 Download CSV after join",
-                data=csv_buffer_joined.getvalue().encode("utf-8"),
-                file_name="geojson_with_joined_attributes.csv",
-                mime="text/csv"
-            )
-    except Exception as e:
-        st.error(f"❌ Failed to join attributes: {e}")
-
 # --- Step B: Upload edited CSV → Merge → GeoJSON ---
 st.markdown("---")
 st.header("📤 Step B — Upload CSV hasil edit → Merge → Download GeoJSON")
@@ -266,3 +231,81 @@ if edited_csv:
             st.success("✅ GeoJSON berhasil dibuat!")
     except Exception as e:
         st.error(f"❌ Gagal memproses CSV: {e}")
+
+# --- Step C: Stand-alone Join Attributes ---
+st.markdown("---")
+st.header("🧩 Step C — Stand-alone Join Attributes")
+st.info("""
+Upload **two files** (main + additional) and join attributes by a shared key column.
+- Supported formats: CSV, XLSX, GeoJSON/JSON
+- Geometry is preserved if main file is GeoJSON
+""")
+
+col1, col2 = st.columns(2)
+with col1:
+    main_file = st.file_uploader("Upload MAIN file (CSV, XLSX, GeoJSON)", type=["csv","xlsx","geojson","json"], key="main_file")
+with col2:
+    add_file = st.file_uploader("Upload ADDITIONAL attribute file (CSV, XLSX, GeoJSON)", type=["csv","xlsx","geojson","json"], key="add_file")
+
+join_key_c = st.text_input("Join key column (must exist in both files)", value="_feature_id", key="join_key_c")
+
+if st.button("🔗 Join Attributes (Step C)"):
+    if main_file is None or add_file is None:
+        st.error("❌ Both files must be uploaded")
+    else:
+        try:
+            # --- Load MAIN file ---
+            if main_file.name.lower().endswith(".csv"):
+                main_df = read_csv_with_fallback(main_file)
+            elif main_file.name.lower().endswith(".xlsx"):
+                main_file.seek(0)
+                main_df = pd.read_excel(main_file, dtype=str)
+            else:
+                main_geo = json.load(main_file)
+                main_df = geojson_to_dataframe(main_geo)
+            
+            # --- Load ADDITIONAL file ---
+            if add_file.name.lower().endswith(".csv"):
+                add_df = read_csv_with_fallback(add_file)
+            elif add_file.name.lower().endswith(".xlsx"):
+                add_file.seek(0)
+                add_df = pd.read_excel(add_file, dtype=str)
+            else:
+                add_geo = json.load(add_file)
+                add_df = geojson_to_dataframe(add_geo)
+
+            # --- Validate key ---
+            if join_key_c not in main_df.columns:
+                st.error(f"❌ Key '{join_key_c}' not found in MAIN file")
+            elif join_key_c not in add_df.columns:
+                st.error(f"❌ Key '{join_key_c}' not found in ADDITIONAL file")
+            else:
+                # --- Perform join ---
+                df_joined_c = join_attributes(main_df, add_df, join_key_c)
+                st.success("✅ Attributes successfully joined!")
+                st.subheader("👀 Preview (first 10 rows)")
+                st.dataframe(df_joined_c.head(10))
+
+                # --- Download CSV ---
+                csv_buffer_c = io.StringIO()
+                df_joined_c.to_csv(csv_buffer_c, index=False, encoding='utf-8')
+                st.download_button(
+                    "💾 Download CSV after join",
+                    data=csv_buffer_c.getvalue().encode("utf-8"),
+                    file_name="joined_attributes_stepC.csv",
+                    mime="text/csv"
+                )
+
+                # --- Optional: Download GeoJSON if main was GeoJSON ---
+                if main_file.name.lower().endswith(("geojson","json")):
+                    geojson_out_c = dataframe_to_geojson(df_joined_c)
+                    geo_str_c = json.dumps(geojson_out_c, indent=2, ensure_ascii=False)
+                    st.download_button(
+                        "💾 Download GeoJSON after join",
+                        data=geo_str_c.encode("utf-8"),
+                        file_name="joined_attributes_stepC.geojson",
+                        mime="application/json"
+                    )
+
+        except Exception as e:
+            st.error(f"❌ Failed to join attributes: {e}")
