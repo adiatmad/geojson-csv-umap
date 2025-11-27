@@ -1,8 +1,11 @@
 """
-Streamlit app: GeoJSON <-> CSV bulk properties editor workflow
-- UTF-8 → Latin-1/CP1252 fallback
-- Combine multiple GeoJSON files
-- Step C: Stand-alone Join Attributes
+Streamlit app: GeoJSON ↔ CSV bulk properties editor workflow
+Includes:
+- Step 0: Combine multiple GeoJSON
+- Step A: GeoJSON → CSV
+- Step B: CSV → Merge → GeoJSON
+- Step C: Stand-alone Join Attributes (CSV/XLSX/GeoJSON)
+Simplified encoding handling: UTF-8 first, then fallback to Latin-1/CP1252
 """
 
 import streamlit as st
@@ -15,9 +18,13 @@ st.set_page_config(page_title="GeoJSON ↔ CSV Bulk Editor", layout="wide")
 st.title("GeoJSON ↔ CSV Bulk Editor — bulk-edit properties for uMap workflow")
 
 DEFAULT_EXAMPLE_PATH = "/mnt/data/baee1fac-2f34-4d13-a83e-39ceda97409b.png"
+
 st.info("🚨 **PENTING**: Jangan edit kolom `geometry_json` di Excel. Hanya edit kolom properties (nama, jenis, dsb).")
 
-# --- Helper functions ---
+# --------------------------
+# --- Helper functions -----
+# --------------------------
+
 def read_csv_with_fallback(file_buffer):
     try:
         file_buffer.seek(0)
@@ -49,10 +56,7 @@ def geojson_to_dataframe(geojson: Dict[str, Any]) -> pd.DataFrame:
         props = feat.get("properties", {}) or {}
         geom = feat.get("geometry", None)
         fid = feat.get("id", f"feature_{i}")
-        row = {
-            "_feature_id": fid,
-            "geometry_json": json.dumps(geom) if geom is not None else None,
-        }
+        row = {"_feature_id": fid, "geometry_json": json.dumps(geom) if geom else None}
         for k, v in props.items():
             if k in row:
                 row[f"prop_{k}"] = v
@@ -68,34 +72,18 @@ def dataframe_to_geojson(df: pd.DataFrame) -> Dict[str, Any]:
     for _, row in df.iterrows():
         geom_json = row.get("geometry_json")
         try:
-            geom = json.loads(geom_json) if pd.notna(geom_json) and geom_json is not None else None
-        except Exception as e:
-            st.error(f"Invalid geometry JSON for feature id={row.get('_feature_id')}: {str(e)}")
+            geom = json.loads(geom_json) if pd.notna(geom_json) and geom_json else None
+        except:
             geom = None
-        props = {}
-        for col in df.columns:
-            if col in ("geometry_json", "_feature_id"):
-                continue
-            val = row[col]
-            if pd.isna(val) or val == '':
-                continue
-            props[col] = val
-        feature = {
-            "type": "Feature",
-            "properties": props,
-            "geometry": geom,
-            "id": row.get("_feature_id")
-        }
-        features.append(feature)
-    return {"type": "FeatureCollection", "features": features}
+        props = {col: row[col] for col in df.columns if col not in ("geometry_json", "_feature_id") and pd.notna(row[col]) and row[col] != ""}
+        features.append({"type":"Feature","properties":props,"geometry":geom,"id":row.get("_feature_id")})
+    return {"type":"FeatureCollection","features":features}
 
 def combine_geojson_files(geojson_files: List[Dict[str, Any]]) -> Dict[str, Any]:
     all_features = []
     feature_ids = set()
     for i, geojson_obj in enumerate(geojson_files):
-        features = geojson_obj.get("features", [])
-        st.info(f"📁 File {i+1}: {len(features)} features")
-        for feature in features:
+        for feature in geojson_obj.get("features", []):
             original_id = feature.get("id")
             if original_id and original_id in feature_ids:
                 counter = 1
@@ -108,26 +96,25 @@ def combine_geojson_files(geojson_files: List[Dict[str, Any]]) -> Dict[str, Any]
             if feature.get("id"):
                 feature_ids.add(feature["id"])
             all_features.append(feature)
-    return {"type": "FeatureCollection", "features": all_features}
+    return {"type":"FeatureCollection","features":all_features}
 
-def join_attributes(base_df: pd.DataFrame, join_df: pd.DataFrame, key: str, suffix="_joined") -> pd.DataFrame:
-    join_cols = [c for c in join_df.columns if c not in [key, "geometry_json"]]
-    df_joined = base_df.merge(
-        join_df[[key] + join_cols],
-        on=key,
-        how='left',
-        suffixes=("", suffix)
-    )
-    return df_joined
+def join_attributes(main_df, add_df, join_key):
+    joined = pd.merge(main_df, add_df, on=join_key, how="left", suffixes=('', '_add'))
+    return joined
 
-# --- Step 0: Combine multiple GeoJSON ---
+# --------------------------
+# --- Step 0: Combine GeoJSON
+# --------------------------
 st.header("🔄 Step 0 — Combine Multiple GeoJSON Files")
+st.write("Gabungkan beberapa file GeoJSON menjadi satu file yang valid")
+
 multi_geojson_files = st.file_uploader(
     "Upload multiple GeoJSON files (.geojson or .json)", 
     type=["geojson", "json"], 
     key="multi_geo",
     accept_multiple_files=True
 )
+
 if multi_geojson_files and len(multi_geojson_files) > 1:
     geojson_objects = []
     valid_files = True
@@ -136,176 +123,122 @@ if multi_geojson_files and len(multi_geojson_files) > 1:
             geojson_obj = json.load(uploaded_file)
             if geojson_obj.get("type") == "FeatureCollection":
                 geojson_objects.append(geojson_obj)
-                st.success(f"✅ File {i+1}: {uploaded_file.name} - Valid FeatureCollection")
             else:
-                st.error(f"❌ File {i+1}: {uploaded_file.name} - Not a FeatureCollection")
+                st.error(f"❌ File {uploaded_file.name} bukan FeatureCollection")
                 valid_files = False
         except Exception as e:
-            st.error(f"❌ File {i+1}: {uploaded_file.name} - Error: {e}")
+            st.error(f"❌ File {uploaded_file.name} error: {e}")
             valid_files = False
     if valid_files and geojson_objects:
-        try:
-            combined_geojson = combine_geojson_files(geojson_objects)
-            total_features = len(combined_geojson["features"])
-            st.success(f"✅ Combined {len(geojson_objects)} files into {total_features} features")
-            st.subheader("👀 Preview Combined GeoJSON (first 3 features)")
-            for i, feature in enumerate(combined_geojson["features"][:3]):
-                st.write(f"**Feature {i+1}:**")
-                st.json(feature)
-            combined_geo_str = json.dumps(combined_geojson, indent=2, ensure_ascii=False)
-            st.download_button(
-                "💾 Download Combined GeoJSON", 
-                data=combined_geo_str.encode("utf-8"), 
-                file_name="combined.geojson", 
-                mime="application/json",
-                key="download_combined"
-            )
-            if st.button("🔄 Use Combined GeoJSON for Step A"):
-                st.session_state.combined_geojson = combined_geojson
-                st.success("✅ Combined GeoJSON ready for Step A!")
-        except Exception as e:
-            st.error(f"❌ Error combining GeoJSON files: {e}")
+        combined_geojson = combine_geojson_files(geojson_objects)
+        st.success(f"✅ Successfully combined {len(geojson_objects)} files ({len(combined_geojson['features'])} features)")
+        st.session_state.combined_geojson = combined_geojson
 
-# --- Step A: Upload GeoJSON → Convert CSV ---
+# --------------------------
+# --- Step A: GeoJSON → CSV
+# --------------------------
 st.header("📥 Step A — Convert GeoJSON → CSV")
 col1, col2 = st.columns([1,1])
 with col1:
-    uploaded_geojson = st.file_uploader("Upload GeoJSON (.geojson or .json)", type=["geojson","json"], key="upload_geo")
+    uploaded_geojson = st.file_uploader("Upload GeoJSON (.geojson or .json)", type=["geojson", "json"], key="upload_geo")
     paste_geo_text = st.text_area("Atau paste GeoJSON di sini (optional)", height=120)
 with col2:
-    st.write("📋 Instructions: Edit only properties, not geometry_json or _feature_id")
+    st.write("📋 Instructions:\n- Upload GeoJSON asli → CSV untuk bulk edit\n- Jangan edit geometry_json\n- Bisa pakai combined GeoJSON dari Step 0")
 
 geojson_obj = None
 if 'combined_geojson' in st.session_state:
     geojson_obj = st.session_state.combined_geojson
-elif uploaded_geojson:
-    try:
-        geojson_obj = json.load(uploaded_geojson)
-        st.success("✅ GeoJSON berhasil di-load")
-    except Exception as e:
-        st.error(f"❌ Gagal parse GeoJSON: {e}")
+elif uploaded_geojson is not None:
+    try: geojson_obj = json.load(uploaded_geojson)
+    except: st.error("❌ Gagal parse GeoJSON")
 elif paste_geo_text.strip() != "":
-    try:
-        geojson_obj = json.loads(paste_geo_text)
-        st.success("✅ GeoJSON dari teks berhasil di-load")
-    except Exception as e:
-        st.error(f"❌ Gagal parse GeoJSON dari teks: {e}")
+    try: geojson_obj = json.loads(paste_geo_text)
+    except: st.error("❌ Gagal parse GeoJSON dari teks")
 
 if geojson_obj:
     df_out = geojson_to_dataframe(geojson_obj)
-    st.subheader("👀 Preview CSV hasil convert (10 baris pertama)")
     st.dataframe(df_out.head(10))
     csv_buffer = io.StringIO()
     df_out.to_csv(csv_buffer, index=False, encoding='utf-8')
-    st.download_button(
-        "💾 Download CSV untuk diedit di Excel", 
-        data=csv_buffer.getvalue().encode("utf-8"), 
-        file_name="export_properties.csv", 
-        mime="text/csv"
-    )
+    st.download_button("💾 Download CSV untuk diedit", csv_buffer.getvalue().encode("utf-8"), "export_properties.csv", "text/csv")
 
-# --- Step B: Upload edited CSV → Merge → GeoJSON ---
+# --------------------------
+# --- Step B: CSV → Merge → GeoJSON
+# --------------------------
 st.markdown("---")
 st.header("📤 Step B — Upload CSV hasil edit → Merge → Download GeoJSON")
-edited_csv = st.file_uploader("Upload CSV yang sudah diedit", type=["csv"], key="upload_csv")
+edited_csv = st.file_uploader("Upload CSV hasil edit (Step A)", type=["csv"], key="upload_csv")
 if edited_csv:
-    try:
-        df_edited = read_csv_with_fallback(edited_csv)
-        st.subheader("👀 Preview CSV (setelah edit)")
-        st.dataframe(df_edited.head(10))
-        if "geometry_json" not in df_edited.columns:
-            st.error("❌ CSV tidak mengandung kolom 'geometry_json'")
-        else:
-            df_edited = df_edited.replace(['','NaN','NaT','None'], None).where(pd.notna(df_edited), None)
-            geo_out = dataframe_to_geojson(df_edited)
-            st.subheader("🔍 Preview GeoJSON (feature pertama)")
-            if geo_out.get("features"):
-                st.json(geo_out["features"][0])
-            geo_str = json.dumps(geo_out, indent=2, ensure_ascii=False)
-            st.download_button(
-                "💾 Download merged GeoJSON", 
-                data=geo_str.encode("utf-8"), 
-                file_name="merged.geojson", 
-                mime="application/json"
-            )
-            st.success("✅ GeoJSON berhasil dibuat!")
-    except Exception as e:
-        st.error(f"❌ Gagal memproses CSV: {e}")
+    df_edited = read_csv_with_fallback(edited_csv)
+    df_edited = df_edited.replace(['','NaN','NaT','None'], None)
+    geo_out = dataframe_to_geojson(df_edited)
+    st.download_button("💾 Download merged GeoJSON", json.dumps(geo_out, indent=2, ensure_ascii=False).encode("utf-8"), "merged.geojson", "application/json")
 
-# --- Step C: Stand-alone Join Attributes ---
+# --------------------------
+# --- Step C: Stand-alone Join Attributes
+# --------------------------
 st.markdown("---")
 st.header("🧩 Step C — Stand-alone Join Attributes")
-st.info("""
-Upload **two files** (main + additional) and join attributes by a shared key column.
-- Supported formats: CSV, XLSX, GeoJSON/JSON
-- Geometry is preserved if main file is GeoJSON
-""")
+st.info("Upload two files (CSV/XLSX/GeoJSON) and join by a shared key column")
 
 col1, col2 = st.columns(2)
 with col1:
-    main_file = st.file_uploader("Upload MAIN file (CSV, XLSX, GeoJSON)", type=["csv","xlsx","geojson","json"], key="main_file")
+    main_file = st.file_uploader("Upload MAIN file", type=["csv","xlsx","geojson","json"], key="main_file")
 with col2:
-    add_file = st.file_uploader("Upload ADDITIONAL attribute file (CSV, XLSX, GeoJSON)", type=["csv","xlsx","geojson","json"], key="add_file")
-
-join_key_c = st.text_input("Join key column (must exist in both files)", value="_feature_id", key="join_key_c")
+    add_file = st.file_uploader("Upload ADDITIONAL file", type=["csv","xlsx","geojson","json"], key="add_file")
+join_key_c = st.text_input("Join key column", value="_feature_id", key="join_key_c")
 
 if st.button("🔗 Join Attributes (Step C)"):
-    if main_file is None or add_file is None:
+    if not main_file or not add_file:
         st.error("❌ Both files must be uploaded")
     else:
         try:
-            # --- Load MAIN file ---
+            # Load MAIN
+            main_df = None
             if main_file.name.lower().endswith(".csv"):
                 main_df = read_csv_with_fallback(main_file)
             elif main_file.name.lower().endswith(".xlsx"):
-                main_file.seek(0)
-                main_df = pd.read_excel(main_file, dtype=str)
+                try:
+                    import openpyxl
+                    main_df = pd.read_excel(main_file, dtype=str)
+                except ImportError:
+                    st.error("❌ Cannot read XLSX: install openpyxl or use CSV/GeoJSON")
             else:
                 main_geo = json.load(main_file)
                 main_df = geojson_to_dataframe(main_geo)
-            
-            # --- Load ADDITIONAL file ---
+
+            # Load ADDITIONAL
+            add_df = None
             if add_file.name.lower().endswith(".csv"):
                 add_df = read_csv_with_fallback(add_file)
             elif add_file.name.lower().endswith(".xlsx"):
-                add_file.seek(0)
-                add_df = pd.read_excel(add_file, dtype=str)
+                try:
+                    import openpyxl
+                    add_df = pd.read_excel(add_file, dtype=str)
+                except ImportError:
+                    st.error("❌ Cannot read XLSX: install openpyxl or use CSV/GeoJSON")
             else:
                 add_geo = json.load(add_file)
                 add_df = geojson_to_dataframe(add_geo)
 
-            # --- Validate key ---
-            if join_key_c not in main_df.columns:
-                st.error(f"❌ Key '{join_key_c}' not found in MAIN file")
+            if main_df is None or add_df is None:
+                st.warning("⚠️ Join aborted: One file could not be loaded")
+            elif join_key_c not in main_df.columns:
+                st.error(f"❌ Key '{join_key_c}' not in MAIN file")
             elif join_key_c not in add_df.columns:
-                st.error(f"❌ Key '{join_key_c}' not found in ADDITIONAL file")
+                st.error(f"❌ Key '{join_key_c}' not in ADDITIONAL file")
             else:
-                # --- Perform join ---
                 df_joined_c = join_attributes(main_df, add_df, join_key_c)
-                st.success("✅ Attributes successfully joined!")
-                st.subheader("👀 Preview (first 10 rows)")
                 st.dataframe(df_joined_c.head(10))
-
-                # --- Download CSV ---
+                # Download CSV
                 csv_buffer_c = io.StringIO()
                 df_joined_c.to_csv(csv_buffer_c, index=False, encoding='utf-8')
-                st.download_button(
-                    "💾 Download CSV after join",
-                    data=csv_buffer_c.getvalue().encode("utf-8"),
-                    file_name="joined_attributes_stepC.csv",
-                    mime="text/csv"
-                )
-
-                # --- Optional: Download GeoJSON if main was GeoJSON ---
+                st.download_button("💾 Download CSV after join", csv_buffer_c.getvalue().encode("utf-8"), "joined_attributes_stepC.csv", "text/csv")
+                # Download GeoJSON if main was GeoJSON
                 if main_file.name.lower().endswith(("geojson","json")):
                     geojson_out_c = dataframe_to_geojson(df_joined_c)
                     geo_str_c = json.dumps(geojson_out_c, indent=2, ensure_ascii=False)
-                    st.download_button(
-                        "💾 Download GeoJSON after join",
-                        data=geo_str_c.encode("utf-8"),
-                        file_name="joined_attributes_stepC.geojson",
-                        mime="application/json"
-                    )
+                    st.download_button("💾 Download GeoJSON after join", geo_str_c.encode("utf-8"), "joined_attributes_stepC.geojson", "application/json")
 
         except Exception as e:
             st.error(f"❌ Failed to join attributes: {e}")
