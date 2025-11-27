@@ -285,8 +285,8 @@ with col1:
     main_file = st.file_uploader("Upload file GeoJSON", type=["geojson","json"], key="main_file_fixed")
     
 with col2:
-    st.subheader("File Tambahan (XLSX/CSV)")
-    add_file = st.file_uploader("Upload file data tambahan", type=["csv","xlsx"], key="add_file_fixed")
+    st.subheader("File Tambahan (CSV)")
+    add_file = st.file_uploader("Upload file data tambahan", type=["csv"], key="add_file_fixed")
 
 # Auto-detect join key options
 join_key_options = ["id", "_feature_id", "name", "ID", "Id"]
@@ -380,3 +380,4 @@ if st.checkbox("🔧 Show debug info"):
 
 st.markdown("---")
 st.write("**Catatan:** Aplikasi ini khusus untuk menggabungkan data XLSX/CSV dengan GeoJSON berdasarkan kolom join yang sama.")
+
