@@ -270,7 +270,7 @@ if edited_csv:
 # --------------------------
 # --- IMPROVED Step C: Stand-alone Join Attributes
 # --------------------------
-st.header("🧩 Step C — Join Attributes (XLSX + GeoJSON) - FIXED")
+st.header("🧩 Step C — Join Attributes (GeoJSON + CSV)")
 
 st.info("""
 **Cara penggunaan:**
@@ -380,4 +380,5 @@ if st.checkbox("🔧 Show debug info"):
 
 st.markdown("---")
 st.write("**Catatan:** Aplikasi ini khusus untuk menggabungkan data XLSX/CSV dengan GeoJSON berdasarkan kolom join yang sama.")
+
 
